@@ -117,3 +117,18 @@ exports.logout = catchAsync(async (req, res) => {
 
     res.status(200).json({ status: 'success', message: 'Logout successful.' });
 });
+
+/** ------------------ Protect ------------------ **/
+exports.Protect = catchAsync(async (req, res, next) => {
+
+  const token = req.headers.authorization?.split(' ')[1];
+  
+  if (!token) return next(new AppError('You are not logged in! Please login to get access'));
+
+  const { data: user, error } = await supabase.auth.getUser(token);
+
+  if (error || !user) return next(new AppError('User does not exist or the token has expired! Please login again'));
+
+  req.user = user;
+  next();
+});
