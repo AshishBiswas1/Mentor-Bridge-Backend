@@ -2,6 +2,18 @@ const supabase = require('../util/supabaseClient');
 const catchAsync = require('../util/catchAsync');
 const AppError = require('../util/appError');
 
+// Helper: parse stringified JSON if needed
+function parseIfJsonString(val) {
+  if (typeof val === 'string') {
+    try {
+      return JSON.parse(val);
+    } catch (e) {
+      return val;
+    }
+  }
+  return val;
+}
+
 /** ------------------ SIGN UP ------------------ **/
 exports.signup = catchAsync(async (req, res, next) => {
     const { name, email, password} = req.body;
@@ -11,20 +23,22 @@ exports.signup = catchAsync(async (req, res, next) => {
     }
 
     const { data, error } = await supabase.auth.signUp({ 
-        email,
-        password,
-        options: {
-            data: name
-        }
+      email,
+      password,
+      options: {
+        data: { name }
+      }
     });
 
     if (error || !data.user) {
      return next(new AppError(error.message || 'Signup failed', 400));
     }
 
+    const responseData = parseIfJsonString(data);
+
     res.status(201).json({
       status: 'success',
-      data
+      data: responseData
     });
 });
 
@@ -43,11 +57,12 @@ exports.login = catchAsync(async (req, res, next) => {
       return next(new AppError(error.message || 'Invalid credentials.', 400));
 
     const token = data.session.access_token;
+    const responseData = parseIfJsonString(data);
 
     res.status(200).json({
-        status: 'success',
-        token,
-        data
+      status: 'success',
+      token,
+      data: responseData.session.user
     })
 });
 
@@ -73,7 +88,7 @@ exports.forgotPassword = catchAsync(async (req, res) => {
 
 
 /** ------------------ RESET PASSWORD ------------------ **/
-export const resetPassword = catchAsync(async (req, res) => {
+exports.resetPassword = catchAsync(async (req, res) => {
 
     const { access_token, newPassword } = req.body;
 
@@ -89,7 +104,7 @@ export const resetPassword = catchAsync(async (req, res) => {
       return res.status(400).json({ error: error.message });
 
     return res.json({ message: 'Password updated successfully.' });
-});
+  });
 
 
 /** ------------------ LOGOUT ------------------ **/
