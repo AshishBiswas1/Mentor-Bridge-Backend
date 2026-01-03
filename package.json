@@ -1,0 +1,24 @@
+{
+  "name": "mentor-bridge-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "start:dev": "nodemon server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.89.0",
+    "dotenv": "^17.2.3",
+    "express": "^4.22.1",
+    "morgan": "^1.10.1",
+    "socket.io": "^4.8.3",
+    "zod": "^4.3.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
