@@ -1,134 +1,201 @@
 const supabase = require('../util/supabaseClient');
 const catchAsync = require('../util/catchAsync');
 const AppError = require('../util/appError');
+const crypto = require('crypto');
 
-// Helper: parse stringified JSON if needed
-function parseIfJsonString(val) {
-  if (typeof val === 'string') {
-    try {
-      return JSON.parse(val);
-    } catch (e) {
-      return val;
-    }
-  }
-  return val;
+/**
+ * Generate a short unique link token
+ */
+function generateToken(len = 6) {
+  return crypto.randomBytes(len).toString('hex');
 }
 
-/** ------------------ SIGN UP ------------------ **/
-exports.signup = catchAsync(async (req, res, next) => {
-    const { name, email, password} = req.body;
+/**
+ * Create a collaborative session:
+ * - validate input
+ * - generate `id` and unique `link`
+ * - insert into `sessions` table in Supabase
+ * - emit `session:created` via socket.io if `io` is attached to the Express app
+ */
+exports.createSession = catchAsync(async (req, res, next) => {
+  // Mentor must be authenticated; mentor id comes from req.user
+  const mentor_id = req.user && req.user.id;
 
-    if (!name || !email || !password) {
-      return next(new AppError('All fields are required', 400));
-    }
+  const {data, error} = await supabase.from('users').select('name').eq('id', mentor_id);
+  const userdata = data;
 
-    const { data, error } = await supabase.auth.signUp({ 
-      email,
-      password,
-      options: {
-        data: { name }
+  if (!mentor_id) {
+    return next(new AppError('Authentication required: mentor not found in request', 401));
+  }
+
+  const id = crypto.randomUUID();
+
+  // Try to insert a session with a unique link. If link collision happens, retry a few times.
+  const maxAttempts = 5;
+  let attempt = 0;
+  let inserted = null;
+  let lastError = null;
+
+  while (attempt < maxAttempts && !inserted) {
+    attempt += 1;
+    const link = generateToken(6);// 12 hex chars
+
+    const payload = {
+      id,
+      mentor_id,
+      mentor_name: userdata[0].name,
+      // student fields will be filled later by the student
+      student_name: null,
+      student_email: null,
+      link,
+      status: 'pending'
+    };
+
+    const { data, error } = await supabase.from('sessions').insert(payload).select();
+
+    if (error) {
+      lastError = error;
+      // If unique violation on link, retry. Otherwise break and throw.
+      const msg = (error.message || '').toLowerCase();
+      if (msg.includes('duplicate') || msg.includes('unique') || (error.code && Number(error.code) === 23505)) {
+        // collision - try again
+        continue;
       }
-    });
 
-    if (error || !data.user) {
-     return next(new AppError(error.message || 'Signup failed', 400));
+      return next(new AppError(error.message || 'Database error when creating session', 500));
     }
 
-    const responseData = parseIfJsonString(data);
+    if (data && data.length > 0) {
+      inserted = data[0];
+      break;
+    }
+  }
 
-    res.status(201).json({
-      status: 'success',
-      data: responseData
-    });
+  if (!inserted) {
+    const message = lastError ? lastError.message : 'Failed to create unique session link';
+    return next(new AppError(message, 500));
+  }
+
+  // Emit socket event if socket.io server is attached to the app
+  try {
+    const io = req.app && (req.app.get ? req.app.get('io') : req.app.locals && req.app.locals.io);
+    if (io && typeof io.emit === 'function') {
+      io.to(inserted.link).emit('session-created', inserted);
+    }
+  } catch (e) {
+    // Non-fatal: log but don't fail request
+    // eslint-disable-next-line no-console
+    console.warn('socket emit failed', e.message || e);
+  }
+
+  res.status(201).json({ status: 'success', data: inserted });
 });
 
+/**
+ * (Optional) helper to join session from an incoming socket or HTTP request
+ * This file focuses on createSession per request. Additional session actions
+ * (start, end, join) can be added similarly.
+ */
 
-/** ------------------ LOGIN ------------------ **/
-exports.login = catchAsync(async (req, res, next) => {
+/**
+ * Get session by link
+ */
+exports.getSession = catchAsync(async (req, res, next) => {
+  const { link } = req.query;
 
-    const { email, password } = req.body;
+  if (!link) {
+    return next(new AppError('Link is required', 400));
+  }
 
-    if (!email || !password)
-      return next(new AppError('email and password are required', 400));
+  const { data: sessions, error } = await supabase
+    .from('sessions')
+    .select('*')
+    .eq('link', link)
+    .limit(1);
+    
+  if (error) {
+    return next(new AppError('Database error', 500));
+  }
 
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (!sessions || sessions.length === 0) {
+    return next(new AppError('Session not found', 404));
+  }
 
-    if (error || !data?.session)
-      return next(new AppError(error.message || 'Invalid credentials.', 400));
+  const session = sessions[0];
 
-    const token = data.session.access_token;
-    const responseData = parseIfJsonString(data);
+  // If session is active and has both mentor and student, notify via socket
+  if (session.status === 'active' && session.student_name) {
+    try {
+      const io = req.app && (req.app.get ? req.app.get('io') : req.app.locals && req.app.locals.io);
+      if (io && typeof io.emit === 'function') {
+        io.to(session.link).emit('session-update', session);
+      }
+    } catch (e) {
+      // Non-fatal
+    }
+  }
 
-    res.status(200).json({
-      status: 'success',
-      token,
-      data: responseData.session.user
+  res.status(200).json({ status: 'success', data: session });
+});
+
+/**
+ * Join a collaborative session:
+ * - validate input: link, student_name, student_email
+ * - find session by link where status = 'pending'
+ * - update session with student details and set status to 'active'
+ * - emit 'session:joined' via socket.io
+ */
+exports.joinSession = catchAsync(async (req, res, next) => {
+  const { link, student_name, student_email } = req.body;
+
+  if (!link || !student_name || !student_email) {
+    return next(new AppError('Link, student name, and student email are required', 400));
+  }
+
+  // Find the session by link and status pending
+  const { data: sessions, error: findError } = await supabase
+    .from('sessions')
+    .select('*')
+    .eq('link', link)
+    .eq('status', 'pending')
+    .limit(1);
+
+  if (findError) {
+    return next(new AppError('Database error', 500));
+  }
+
+  if (!sessions || sessions.length === 0) {
+    return next(new AppError('Session not found or already joined', 404));
+  }
+
+  const session = sessions[0];
+
+  // Update the session
+  const { data: updated, error: updateError } = await supabase
+    .from('sessions')
+    .update({
+      student_name,
+      student_email,
+      status: 'active'
     })
-});
+    .eq('id', session.id)
+    .select();
 
+  if (updateError) {
+    return next(new AppError('Failed to join session', 500));
+  }
 
-/** ------------------ FORGOT PASSWORD ------------------ **/
-exports.forgotPassword = catchAsync(async (req, res) => {
+  const updatedSession = updated[0];
 
-    const { email } = req.body;
+  // Emit socket event
+  try {
+    const io = req.app && (req.app.get ? req.app.get('io') : req.app.locals && req.app.locals.io);
+    if (io && typeof io.emit === 'function') {
+      io.to(session.link).emit('session-joined', updatedSession);
+    }
+  } catch (e) {
+    console.warn('socket emit failed', e.message || e);
+  }
 
-    if (!email)
-      return res.status(400).json({ error: 'Email is required.' });
-
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${process.env.FRONTEND_URL}/reset-password`,
-    });
-
-    if (error)
-      return res.status(400).json({ error: error.message });
-
-    return res.json({ message: 'Password reset email sent.' });
-
-});
-
-
-/** ------------------ RESET PASSWORD ------------------ **/
-exports.resetPassword = catchAsync(async (req, res) => {
-
-    const { access_token, newPassword } = req.body;
-
-    if (!access_token || !newPassword)
-      return res.status(400).json({ error: 'Token and new password are required.' });
-
-    const { error } = await supabase.auth.updateUser(
-      { password: newPassword },
-      { accessToken: access_token }
-    );
-
-    if (error)
-      return res.status(400).json({ error: error.message });
-
-    return res.json({ message: 'Password updated successfully.' });
-  });
-
-
-/** ------------------ LOGOUT ------------------ **/
-exports.logout = catchAsync(async (req, res) => {
- 
-    const { error } = await supabase.auth.signOut();
-
-    if (error)
-      return next(new AppError(error.message, 400));
-
-    res.status(200).json({ status: 'success', message: 'Logout successful.' });
-});
-
-/** ------------------ Protect ------------------ **/
-exports.Protect = catchAsync(async (req, res, next) => {
-
-  const token = req.headers.authorization?.split(' ')[1];
-  
-  if (!token) return next(new AppError('You are not logged in! Please login to get access'));
-
-  const { data: user, error } = await supabase.auth.getUser(token);
-
-  if (error || !user) return next(new AppError('User does not exist or the token has expired! Please login again'));
-
-  req.user = user;
-  next();
+  res.status(200).json({ status: 'success', data: updatedSession });
 });
