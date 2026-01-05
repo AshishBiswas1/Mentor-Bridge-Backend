@@ -108,14 +108,12 @@ exports.resetPassword = catchAsync(async (req, res) => {
 
 
 /** ------------------ LOGOUT ------------------ **/
-exports.logout = catchAsync(async (req, res) => {
- 
-    const { error } = await supabase.auth.signOut();
+exports.logout = catchAsync(async (req, res, next) => {
+  const { error } = await supabase.auth.signOut();
 
-    if (error)
-      return next(new AppError(error.message, 400));
+  if (error) return next(new AppError(error.message, 400));
 
-    res.status(200).json({ status: 'success', message: 'Logout successful.' });
+  res.status(200).json({ status: 'success', message: 'Logout successful.' });
 });
 
 /** ------------------ Protect ------------------ **/
