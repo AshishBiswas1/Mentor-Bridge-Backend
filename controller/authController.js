@@ -90,21 +90,42 @@ exports.forgotPassword = catchAsync(async (req, res) => {
 /** ------------------ RESET PASSWORD ------------------ **/
 exports.resetPassword = catchAsync(async (req, res) => {
 
-    const { access_token, newPassword } = req.body;
+  const { access_token, newPassword } = req.body;
 
-    if (!access_token || !newPassword)
-      return res.status(400).json({ error: 'Token and new password are required.' });
+  if (!access_token || !newPassword) {
+    return res.status(400).json({
+      error: 'Access token and new password are required',
+    });
+  }
 
-    const { error } = await supabase.auth.updateUser(
-      { password: newPassword },
-      { accessToken: access_token }
-    );
-
-    if (error)
-      return res.status(400).json({ error: error.message });
-
-    return res.json({ message: 'Password updated successfully.' });
+  /* 1️⃣ Set session using recovery access token */
+  const { error: sessionError } = await supabase.auth.setSession({
+    access_token,
+    refresh_token: access_token, // required but ignored for recovery flow
   });
+
+  if (sessionError) {
+    return res.status(401).json({
+      error: 'Invalid or expired reset token',
+    });
+  }
+
+  /* 2️⃣ Update password */
+  const { error: updateError } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+
+  if (updateError) {
+    return res.status(400).json({
+      error: updateError.message,
+    });
+  }
+
+  return res.json({
+    message: 'Password updated successfully',
+  });
+});
+
 
 
 /** ------------------ LOGOUT ------------------ **/
