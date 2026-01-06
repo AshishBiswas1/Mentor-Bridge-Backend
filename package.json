@@ -1,0 +1,29 @@
+{
+  "name": "mentor-bridge-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AshishBiswas1/Mentor-Bridge-Backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/AshishBiswas1/Mentor-Bridge-Backend/issues"
+  },
+  "homepage": "https://github.com/AshishBiswas1/Mentor-Bridge-Backend#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.89.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "http": "^0.0.1-security",
+    "socket.io": "^4.8.3",
+    "uuid": "^13.0.0"
+  }
+}
