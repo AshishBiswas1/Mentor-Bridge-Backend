@@ -20,13 +20,32 @@ function generateToken(len = 6) {
 exports.createSession = catchAsync(async (req, res, next) => {
   // Mentor must be authenticated; mentor id comes from req.user
   const mentor_id = req.user && req.user.id;
-
-  const {data, error} = await supabase.from('users').select('name').eq('id', mentor_id);
-  const userdata = data;
+  const session_name = req.body.name;
 
   if (!mentor_id) {
     return next(new AppError('Authentication required: mentor not found in request', 401));
   }
+
+  if (!session_name || typeof session_name !== 'string') {
+    return next(new AppError('Session name is required', 400));
+  }
+
+  // Fetch mentor user to get display name
+  const { data: userData, error: userError } = await supabase
+    .from('users')
+    .select('name')
+    .eq('id', mentor_id)
+    .limit(1);
+
+  if (userError) {
+    return next(new AppError('Database error looking up mentor', 500));
+  }
+
+  if (!userData || userData.length === 0) {
+    return next(new AppError('Mentor not found', 404));
+  }
+
+  const userdata = userData;
 
   const id = crypto.randomUUID();
 
@@ -38,12 +57,13 @@ exports.createSession = catchAsync(async (req, res, next) => {
 
   while (attempt < maxAttempts && !inserted) {
     attempt += 1;
-    const link = generateToken(6);// 12 hex chars
+    const link = generateToken(6); // 12 hex chars
 
     const payload = {
       id,
       mentor_id,
       mentor_name: userdata[0].name,
+      session_name,
       // student fields will be filled later by the student
       student_name: null,
       student_email: null,
@@ -51,22 +71,28 @@ exports.createSession = catchAsync(async (req, res, next) => {
       status: 'pending'
     };
 
-    const { data, error } = await supabase.from('sessions').insert(payload).select();
+    const { data: insertData, error: insertError } = await supabase
+      .from('sessions')
+      .insert(payload)
+      .select();
 
-    if (error) {
-      lastError = error;
+    if (insertError) {
+      lastError = insertError;
       // If unique violation on link, retry. Otherwise break and throw.
-      const msg = (error.message || '').toLowerCase();
-      if (msg.includes('duplicate') || msg.includes('unique') || (error.code && Number(error.code) === 23505)) {
+      const msg = (insertError.message || '').toLowerCase();
+      const isUniqueViolation =
+        msg.includes('duplicate') || msg.includes('unique') || String(insertError.code) === '23505';
+
+      if (isUniqueViolation) {
         // collision - try again
         continue;
       }
 
-      return next(new AppError(error.message || 'Database error when creating session', 500));
+      return next(new AppError(insertError.message || 'Database error when creating session', 500));
     }
 
-    if (data && data.length > 0) {
-      inserted = data[0];
+    if (insertData && insertData.length > 0) {
+      inserted = insertData[0];
       break;
     }
   }
@@ -112,7 +138,7 @@ exports.getSession = catchAsync(async (req, res, next) => {
     .select('*')
     .eq('link', link)
     .limit(1);
-    
+
   if (error) {
     return next(new AppError('Database error', 500));
   }
@@ -198,4 +224,286 @@ exports.joinSession = catchAsync(async (req, res, next) => {
   }
 
   res.status(200).json({ status: 'success', data: updatedSession });
+});
+
+exports.leaveSession = catchAsync(async (req, res, next) => {
+  const { link } = req.body;
+
+  if (!link) {
+    return next(new AppError('Link is required', 400));
+  }
+
+  // If an Authorization header with a Bearer token is provided, try to populate req.user
+  // This lets mentors call the public leave endpoint while still being recognized.
+  if (!req.user) {
+    try {
+      let token;
+      if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        token = req.headers.authorization.split(' ')[1];
+      }
+      if (token) {
+        const {
+          data: { user },
+          error: userErr
+        } = await supabase.auth.getUser(token);
+        if (user && !userErr) {
+          req.user = user;
+        }
+      }
+    } catch (e) {
+      // Non-fatal — we'll proceed without an authenticated user
+    }
+  }
+
+  // Find the session by link
+  const { data: sessions, error } = await supabase
+    .from('sessions')
+    .select('*')
+    .eq('link', link)
+    .limit(1);
+
+  if (error) {
+    return next(new AppError('Database error', 500));
+  }
+
+  if (!sessions || sessions.length === 0) {
+    return next(new AppError('Session not found', 404));
+  }
+
+  const session = sessions[0];
+
+  // Determine role: mentor if authenticated and matches mentor_id, otherwise treat as student
+  const isMentor = req.user && req.user.id && req.user.id === session.mentor_id;
+  const role = isMentor ? 'mentor' : 'student';
+
+  // If a student is leaving an active session, clear the student info and set status back to 'pending'
+  let updatedSession = session;
+  if (!isMentor && session.status === 'active') {
+    const { data: updated, error: updateError } = await supabase
+      .from('sessions')
+      .update({ student_name: null, student_email: null, status: 'pending' })
+      .eq('id', session.id)
+      .select();
+
+    if (updateError) {
+      // log and continue — don't fail the leave request just because DB update failed
+      // eslint-disable-next-line no-console
+      console.warn(
+        'leaveSession: failed to update session on student leave',
+        updateError.message || updateError
+      );
+    } else if (updated && updated.length > 0) {
+      updatedSession = updated[0];
+    }
+  }
+
+  // Best-effort socket handling: emit an event and try to disconnect matching sockets in the room
+  try {
+    const io = req.app && (req.app.get ? req.app.get('io') : req.app.locals && req.app.locals.io);
+
+    if (io && typeof io.in === 'function') {
+      // Notify all participants that someone left
+      io.to(link).emit('participant-left', { role, link });
+
+      // Also emit updated session data so clients refresh their UI
+      try {
+        io.to(link).emit('session-update', updatedSession || session);
+      } catch (e) {
+        // ignore
+      }
+
+      // Attempt to fetch sockets in the room and disconnect matching sockets
+      if (typeof io.in(link).fetchSockets === 'function') {
+        const sockets = await io.in(link).fetchSockets();
+
+        for (const socket of sockets) {
+          try {
+            const hs = (socket.handshake && socket.handshake.auth) || {};
+            const sdata = socket.data || {};
+
+            const matchesMentor =
+              isMentor &&
+              ((hs.role && hs.role === 'mentor') ||
+                (hs.userId && hs.userId === session.mentor_id) ||
+                (sdata.userId && sdata.userId === session.mentor_id));
+
+            const matchesStudent =
+              !isMentor &&
+              ((hs.role && hs.role === 'student') ||
+                (hs.email && session.student_email && hs.email === session.student_email) ||
+                (sdata.email && session.student_email && sdata.email === session.student_email) ||
+                (sdata.student_name &&
+                  session.student_name &&
+                  sdata.student_name === session.student_name));
+
+            if ((isMentor && matchesMentor) || (!isMentor && matchesStudent)) {
+              // force disconnect this socket
+              try {
+                socket.disconnect(true);
+              } catch (e) {
+                // ignore per-socket disconnect errors
+              }
+            }
+          } catch (e) {
+            // ignore per-socket inspection errors
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // Non-fatal: log and continue
+    // eslint-disable-next-line no-console
+    console.warn('leaveSession socket handling failed', e && e.message ? e.message : e);
+  }
+
+  res.status(200).json({ status: 'success', data: { message: `${role} disconnected` } });
+});
+
+exports.endSession = catchAsync(async (req, res, next) => {
+  // Only mentors (authenticated) may end a session
+  const mentor_id = req.user && req.user.id;
+  if (!mentor_id) {
+    return next(new AppError('Authentication required: mentor not found in request', 401));
+  }
+
+  const { link } = req.body;
+  if (!link) {
+    return next(new AppError('Link is required', 400));
+  }
+
+  // Find the session by link
+  const { data: sessions, error: findError } = await supabase
+    .from('sessions')
+    .select('*')
+    .eq('link', link)
+    .limit(1);
+
+  if (findError) {
+    return next(new AppError('Database error', 500));
+  }
+
+  if (!sessions || sessions.length === 0) {
+    return next(new AppError('Session not found', 404));
+  }
+
+  const session = sessions[0];
+
+  // Verify mentor owns this session
+  if (!session.mentor_id || session.mentor_id !== mentor_id) {
+    return next(new AppError('Forbidden: you are not the owner of this session', 403));
+  }
+
+  // Update session: set status to 'ended' and ended_at timestamp
+  const endedAt = new Date().toISOString();
+  const { data: updatedRows, error: updateError } = await supabase
+    .from('sessions')
+    .update({ status: 'ended', ended_at: endedAt })
+    .eq('id', session.id)
+    .select();
+
+  if (updateError) {
+    return next(new AppError('Failed to end session', 500));
+  }
+
+  const updatedSession = updatedRows && updatedRows[0] ? updatedRows[0] : null;
+
+  // Socket handling: notify room and disconnect all sockets in the room
+  try {
+    const io = req.app && (req.app.get ? req.app.get('io') : req.app.locals && req.app.locals.io);
+    if (io && typeof io.to === 'function') {
+      io.to(session.link).emit(
+        'session-ended',
+        updatedSession || { id: session.id, link: session.link }
+      );
+
+      if (typeof io.in(session.link).fetchSockets === 'function') {
+        const sockets = await io.in(session.link).fetchSockets();
+        for (const socket of sockets) {
+          try {
+            socket.disconnect(true);
+          } catch (e) {
+            // ignore individual socket disconnect errors
+          }
+        }
+      }
+    }
+  } catch (e) {
+    // Non-fatal: log and continue
+    // eslint-disable-next-line no-console
+    console.warn('endSession socket handling failed', e && e.message ? e.message : e);
+  }
+
+  res.status(200).json({ status: 'success', data: updatedSession });
+});
+
+exports.getMentorSessions = catchAsync(async (req, res, next) => {
+  const { data, error } = await supabase
+    .from('sessions')
+    .select('id, link, status, started_at, ended_at, session_name')
+    .eq('mentor_id', req.user.id);
+
+  if (error) {
+    return next(new AppError(error.message || 'No session found', 400));
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data
+  });
+});
+
+exports.mentorJoinSession = catchAsync(async (req, res, next) => {
+  // Mentor must be authenticated
+  const mentor_id = req.user && req.user.id;
+  if (!mentor_id) {
+    return next(new AppError('Authentication required: mentor not found in request', 401));
+  }
+
+  const { link } = req.body;
+  if (!link) {
+    return next(new AppError('Link is required', 400));
+  }
+
+  // Find the session by link
+  const { data: sessions, error: findError } = await supabase
+    .from('sessions')
+    .select('*')
+    .eq('link', link)
+    .limit(1);
+
+  if (findError) {
+    return next(new AppError('Database error', 500));
+  }
+
+  if (!sessions || sessions.length === 0) {
+    return next(new AppError('Session not found', 404));
+  }
+
+  const session = sessions[0];
+
+  // Verify mentor owns this session
+  if (!session.mentor_id || session.mentor_id !== mentor_id) {
+    return next(new AppError('Forbidden: you are not the owner of this session', 403));
+  }
+
+  // Prevent rejoining an ended session
+  if (session.status === 'ended') {
+    return next(new AppError('Cannot join: session has already ended', 400));
+  }
+
+  // Notify room that mentor has (re)joined and send current session state
+  try {
+    const io = req.app && (req.app.get ? req.app.get('io') : req.app.locals && req.app.locals.io);
+    if (io && typeof io.to === 'function') {
+      io.to(session.link).emit('mentor-joined', { mentor_id, link: session.link });
+      // also emit session-update so clients refresh UI
+      io.to(session.link).emit('session-update', session);
+    }
+  } catch (e) {
+    // Non-fatal
+    // eslint-disable-next-line no-console
+    console.warn('mentorJoinSession socket emit failed', e && e.message ? e.message : e);
+  }
+
+  res.status(200).json({ status: 'success', data: session });
 });
