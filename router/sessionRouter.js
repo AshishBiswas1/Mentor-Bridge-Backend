@@ -9,6 +9,12 @@ router.post('/join', sessionController.joinSession);
 router.get('/', sessionController.getSession);
 router.post('/leave', sessionController.leaveSession);
 
+// Participant count helpers. Support both param and body/query forms.
+router.route('/increment/:sessionId').post(sessionController.incrementParticipant);
+router.route('/decrement/:sessionId').post(sessionController.decrementParticipant);
+
+router.route('/check/:sessionId').get(sessionController.numberOfParticipants);
+
 // Protected routes
 router.use(authController.protect);
 router.post('/create', sessionController.createSession);
