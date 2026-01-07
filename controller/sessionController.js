@@ -395,9 +395,10 @@ exports.endSession = catchAsync(async (req, res, next) => {
 
   // Update session: set status to 'ended' and ended_at timestamp
   const endedAt = new Date().toISOString();
+  // When ending a session, reset participant count to 0 as well
   const { data: updatedRows, error: updateError } = await supabase
     .from('sessions')
-    .update({ status: 'ended', ended_at: endedAt })
+    .update({ status: 'ended', ended_at: endedAt, participants: 0 })
     .eq('id', session.id)
     .select();
 
@@ -490,20 +491,139 @@ exports.mentorJoinSession = catchAsync(async (req, res, next) => {
   if (session.status === 'ended') {
     return next(new AppError('Cannot join: session has already ended', 400));
   }
-
-  // Notify room that mentor has (re)joined and send current session state
+  // If the DB doesn't include a student but there is a connected student socket,
+  // restore the student info and set session status to 'active' so mentor sees them.
   try {
     const io = req.app && (req.app.get ? req.app.get('io') : req.app.locals && req.app.locals.io);
-    if (io && typeof io.to === 'function') {
-      io.to(session.link).emit('mentor-joined', { mentor_id, link: session.link });
-      // also emit session-update so clients refresh UI
-      io.to(session.link).emit('session-update', session);
+    if (io && typeof io.in === 'function') {
+      if (
+        (!session.student_name || !session.student_email || session.status !== 'active') &&
+        typeof io.in(session.link).fetchSockets === 'function'
+      ) {
+        const sockets = await io.in(session.link).fetchSockets();
+        // try to find a student socket with identifying info
+        let foundStudent = null;
+        for (const s of sockets) {
+          try {
+            const hs = (s.handshake && s.handshake.auth) || {};
+            const sdata = s.data || {};
+            const looksLikeStudent =
+              (hs.role && hs.role === 'student') ||
+              (hs.email && hs.email) ||
+              (sdata.student_name && sdata.student_name);
+            if (looksLikeStudent) {
+              foundStudent = {
+                student_name: sdata.student_name || hs.name || hs.student_name || null,
+                student_email: sdata.email || hs.email || null
+              };
+              break;
+            }
+          } catch (e) {
+            // ignore per-socket inspection errors
+          }
+        }
+
+        if (foundStudent) {
+          try {
+            const { data: updatedRows, error: updErr } = await supabase
+              .from('sessions')
+              .update({
+                student_name: foundStudent.student_name,
+                student_email: foundStudent.student_email,
+                status: 'active'
+              })
+              .eq('id', session.id)
+              .select();
+
+            if (!updErr && updatedRows && updatedRows[0]) {
+              // update local session reference
+              const updatedSession = updatedRows[0];
+              session.student_name = updatedSession.student_name;
+              session.student_email = updatedSession.student_email;
+              session.status = updatedSession.status;
+            }
+          } catch (e) {
+            // ignore DB update errors here — it's best-effort
+          }
+        }
+      }
+
+      // Notify room that mentor has (re)joined and send current session state
+      try {
+        io.to(session.link).emit('mentor-joined', { mentor_id, link: session.link });
+        io.to(session.link).emit('session-update', session);
+      } catch (e) {
+        // ignore
+      }
     }
   } catch (e) {
     // Non-fatal
     // eslint-disable-next-line no-console
-    console.warn('mentorJoinSession socket emit failed', e && e.message ? e.message : e);
+    console.warn('mentorJoinSession socket handling failed', e && e.message ? e.message : e);
   }
 
   res.status(200).json({ status: 'success', data: session });
+});
+
+exports.incrementParticipant = catchAsync(async (req, res, next) => {
+  const { sessionId } = req.params;
+
+  if (!sessionId) {
+    return next(new AppError('sessionId is required', 400));
+  }
+
+  const { error } = await supabase.rpc('increment_participant', {
+    row_id: sessionId
+  });
+
+  if (error) {
+    return next(new AppError(error.message, 400));
+  }
+
+  res.status(200).json({
+    message: 'Participant count incremented successfully'
+  });
+});
+
+exports.decrementParticipant = catchAsync(async (req, res, next) => {
+  const { sessionId } = req.params;
+
+  if (!sessionId) {
+    return next(new AppError('sessionId is required', 400));
+  }
+
+  const { error } = await supabase.rpc('decrement_participant', {
+    row_id: sessionId
+  });
+
+  if (error) {
+    return next(new AppError(error.message, 400));
+  }
+
+  res.status(200).json({
+    message: 'Participant count decremented successfully'
+  });
+});
+
+exports.numberOfParticipants = catchAsync(async (req, res, next) => {
+  // Accept either a route param sessionId or a query param `link` to locate the session
+  const { sessionId } = req.params || {};
+  const { link } = req.query || {};
+
+  if (!sessionId && !link) {
+    return next(new AppError('sessionId or link is required', 400));
+  }
+
+  let q = supabase.from('sessions').select('id, participants').limit(1);
+  if (sessionId) q = q.eq('id', sessionId);
+  else q = q.eq('link', link);
+
+  const { data, error } = await q.maybeSingle();
+
+  if (error) {
+    return next(new AppError(error.message, 400));
+  }
+
+  // Return participants number (may be null/undefined if column missing)
+  return res.status(200).json({ status: 'success', data });
 });

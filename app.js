@@ -5,8 +5,16 @@ const helmet = require('helmet');
 const cors = require('cors');
 
 const userRouter = require('./router/userRouter');
+const sessionRouter = require('./router/sessionRouter');
+const codeEditorRouter = require('./router/codeEditorRouter');
 
 const app = express();
+
+if (process.env.NODE_ENV === 'development') {
+  app.use(morgan('dev'));
+}
+
+app.use(express.json());
 
 // Security: set common HTTP headers
 app.use(helmet());
@@ -25,13 +33,9 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-if(process.env.NODE_ENV === 'development') {
-  app.use(morgan('dev'));
-}
-
-app.use(express.json());
-
 app.use('/user', userRouter);
+app.use('/session', sessionRouter);
+app.use('/editor', codeEditorRouter);
 
 app.all('*', (req, res, next) => {
   next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
