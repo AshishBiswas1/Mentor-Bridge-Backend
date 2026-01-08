@@ -178,6 +178,27 @@ exports.joinSession = catchAsync(async (req, res, next) => {
     return next(new AppError('Link, student name, and student email are required', 400));
   }
 
+  // Check participants count by link before attempting to join
+  try {
+    const { data: sessionRow, error: sessErr } = await supabase
+      .from('sessions')
+      .select('id, participants, status')
+      .eq('link', link)
+      .limit(1)
+      .maybeSingle();
+
+    if (sessErr) {
+      return next(new AppError('Database error when checking participants', 500));
+    }
+
+    const currentParticipants = Number((sessionRow && sessionRow.participants));
+    if (currentParticipants >= 2) {
+      return next(new AppError('Session is full — cannot join', 400));
+    }
+  } catch (e) {
+    // If this check fails for any reason, continue and let other checks handle it
+  }
+
   // Find the session by link and status pending
   const { data: sessions, error: findError } = await supabase
     .from('sessions')
@@ -212,6 +233,42 @@ exports.joinSession = catchAsync(async (req, res, next) => {
   }
 
   const updatedSession = updated[0];
+  // If this student has not been recorded in the session_students table for this session,
+  // insert a row. This is best-effort and should not block the join flow.
+  try {
+    const { data: existingRows, error: existErr } = await supabase
+      .from('session_students')
+      .select('id')
+      .eq('session_id', session.id)
+      .eq('student_email', student_email)
+      .limit(1);
+
+    if (existErr) {
+      // log and continue
+      // eslint-disable-next-line no-console
+      console.warn('session_students lookup failed', existErr.message || existErr);
+    } else {
+      const already = existingRows && existingRows.length > 0;
+      if (!already) {
+        try {
+          const { data: insData, error: insErr } = await supabase
+            .from('session_students')
+            .insert({ session_id: session.id, student_name, student_email })
+            .select();
+          if (insErr) {
+            // eslint-disable-next-line no-console
+            console.warn('session_students insert failed', insErr.message || insErr);
+          }
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn('session_students insert error', e && e.message ? e.message : e);
+        }
+      }
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('session_students check/insert failed', e && e.message ? e.message : e);
+  }
 
   // Emit socket event
   try {
