@@ -191,7 +191,7 @@ exports.joinSession = catchAsync(async (req, res, next) => {
       return next(new AppError('Database error when checking participants', 500));
     }
 
-    const currentParticipants = Number((sessionRow && sessionRow.participants));
+    const currentParticipants = Number((sessionRow && sessionRow.participants) || 0);
     if (currentParticipants >= 2) {
       return next(new AppError('Session is full — cannot join', 400));
     }
@@ -624,7 +624,6 @@ exports.mentorJoinSession = catchAsync(async (req, res, next) => {
 
 exports.incrementParticipant = catchAsync(async (req, res, next) => {
   const { sessionId } = req.params;
-
   if (!sessionId) {
     return next(new AppError('sessionId is required', 400));
   }
@@ -636,7 +635,6 @@ exports.incrementParticipant = catchAsync(async (req, res, next) => {
   if (error) {
     return next(new AppError(error.message, 400));
   }
-
   res.status(200).json({
     message: 'Participant count incremented successfully'
   });
