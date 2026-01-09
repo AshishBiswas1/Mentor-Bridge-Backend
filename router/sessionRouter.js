@@ -14,11 +14,13 @@ router.route('/increment/:sessionId').post(sessionController.incrementParticipan
 router.route('/decrement/:sessionId').post(sessionController.decrementParticipant);
 
 router.route('/check/:sessionId').get(sessionController.numberOfParticipants);
+router.route('/check').get(sessionController.numberOfParticipants); // Also support query param ?link=
 
 // Protected routes
 router.use(authController.protect);
 router.post('/create', sessionController.createSession);
 router.post('/end', sessionController.endSession);
+router.post('/disconnect-student', sessionController.disconnectStudent);
 // Mentor-only endpoints
 router.get('/mentor', sessionController.getMentorSessions);
 router.post('/mentor-join', sessionController.mentorJoinSession);
