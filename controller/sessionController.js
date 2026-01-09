@@ -682,3 +682,119 @@ exports.numberOfParticipants = catchAsync(async (req, res, next) => {
   // Return participants number (may be null/undefined if column missing)
   return res.status(200).json({ status: 'success', data });
 });
+
+exports.disconnectStudent = catchAsync(async (req, res, next) => {
+  // Only mentors (authenticated) may disconnect a student
+  const mentor_id = req.user && req.user.id;
+  if (!mentor_id) {
+    return next(new AppError('Authentication required: mentor not found in request', 401));
+  }
+
+  const { link } = req.body;
+  if (!link) {
+    return next(new AppError('Link is required', 400));
+  }
+
+  // Find the session by link
+  const { data: sessions, error: findError } = await supabase
+    .from('sessions')
+    .select('*')
+    .eq('link', link)
+    .limit(1);
+
+  if (findError) {
+    return next(new AppError('Database error', 500));
+  }
+
+  if (!sessions || sessions.length === 0) {
+    return next(new AppError('Session not found', 404));
+  }
+
+  const session = sessions[0];
+
+  // Verify mentor owns this session
+  if (!session.mentor_id || session.mentor_id !== mentor_id) {
+    return next(new AppError('Forbidden: you are not the owner of this session', 403));
+  }
+
+  // Update session: clear student fields and set status back to 'pending'
+  // Also set participants to 1 (mentor still present)
+  let updatedSession = session;
+  try {
+    const { data: updatedRows, error: updateError } = await supabase
+      .from('sessions')
+      .update({ student_name: null, student_email: null, status: 'pending', participants: 1 })
+      .eq('id', session.id)
+      .select();
+
+    if (updateError) {
+      return next(new AppError('Failed to disconnect student', 500));
+    }
+
+    if (updatedRows && updatedRows[0]) {
+      updatedSession = updatedRows[0];
+    }
+  } catch (e) {
+    return next(new AppError('Failed to disconnect student', 500));
+  }
+
+  // Socket handling: notify room and disconnect student sockets
+  try {
+    const io = req.app && (req.app.get ? req.app.get('io') : req.app.locals && req.app.locals.io);
+    if (io && typeof io.in === 'function') {
+      // Notify participants that mentor disconnected the student
+      try {
+        io.to(link).emit('student-disconnected', { link });
+      } catch (e) {
+        // ignore
+      }
+
+      if (typeof io.in(link).fetchSockets === 'function') {
+        const sockets = await io.in(link).fetchSockets();
+
+        for (const socket of sockets) {
+          try {
+            const hs = (socket.handshake && socket.handshake.auth) || {};
+            const sdata = socket.data || {};
+
+            const matchesStudent =
+              (hs.role && hs.role === 'student') ||
+              (hs.email && session.student_email && hs.email === session.student_email) ||
+              (sdata.email && session.student_email && sdata.email === session.student_email) ||
+              (sdata.student_name &&
+                session.student_name &&
+                sdata.student_name === session.student_name);
+
+            if (matchesStudent) {
+              try {
+                socket.disconnect(true);
+              } catch (e) {
+                // ignore per-socket disconnect errors
+              }
+            }
+          } catch (e) {
+            // ignore per-socket inspection errors
+          }
+        }
+      }
+
+      // Emit updated session data so clients refresh their UI
+      try {
+        io.to(link).emit('session-update', updatedSession);
+      } catch (e) {
+        // ignore
+      }
+    }
+  } catch (e) {
+    // Non-fatal: log and continue
+    // eslint-disable-next-line no-console
+    console.warn('disconnectStudent socket handling failed', e && e.message ? e.message : e);
+  }
+
+  res
+    .status(200)
+    .json({
+      status: 'success',
+      data: { message: 'student disconnected', session: updatedSession }
+    });
+});
