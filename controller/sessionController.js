@@ -362,11 +362,14 @@ exports.leaveSession = catchAsync(async (req, res, next) => {
       // Notify all participants that someone left
       io.to(link).emit('participant-left', { role, link });
 
-      // Also emit updated session data so clients refresh their UI
-      try {
-        io.to(link).emit('session-update', updatedSession || session);
-      } catch (e) {
-        // ignore
+      // Only emit session-update if the session data actually changed (e.g., student left and fields were cleared)
+      // Don't emit it for mentor leaving since we don't update the DB for that case
+      if (!isMentor && updatedSession !== session) {
+        try {
+          io.to(link).emit('session-update', updatedSession);
+        } catch (e) {
+          // ignore
+        }
       }
 
       // Attempt to fetch sockets in the room and disconnect matching sockets
