@@ -21,9 +21,23 @@ app.use(helmet());
 
 // Configure CORS to allow requests from the frontend origin
 // FRONTEND_URL should be set in backend `.env` (loaded by server.js)
-const frontendOrigin = process.env.FRONTEND_URL || 'http://localhost:3000';
+const rawOrigins = [
+  process.env.FRONTEND_URL,
+  'https://mentor-bridge-frontend-git-dev-c0b7d3-ashishs-projects-21c10b17.vercel.app',
+  'http://localhost:3000',
+];
+
+// Remove falsy values and trailing slashes to normalize origins
+const allowedOrigins = rawOrigins.filter(Boolean).map((o) => String(o).replace(/\/$/, ''));
+
 const corsOptions = {
-  origin: frontendOrigin,
+  origin: (origin, callback) => {
+    // allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    // check against normalized allowlist
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   credentials: true,
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],

@@ -686,8 +686,8 @@ exports.numberOfParticipants = catchAsync(async (req, res, next) => {
   return res.status(200).json({ status: 'success', data });
 });
 
-exports.disconnectStudent = catchAsync(async (req, res, next) => {
-  // Only mentors (authenticated) may disconnect a student
+exports.newSessionLink = catchAsync(async (req, res, next) => {
+  // Only mentors (authenticated) may rotate the session link
   const mentor_id = req.user && req.user.id;
   if (!mentor_id) {
     return next(new AppError('Authentication required: mentor not found in request', 401));
@@ -698,7 +698,7 @@ exports.disconnectStudent = catchAsync(async (req, res, next) => {
     return next(new AppError('Link is required', 400));
   }
 
-  // Find the session by link
+  // Find the session by existing link
   const { data: sessions, error: findError } = await supabase
     .from('sessions')
     .select('*')
@@ -720,41 +720,78 @@ exports.disconnectStudent = catchAsync(async (req, res, next) => {
     return next(new AppError('Forbidden: you are not the owner of this session', 403));
   }
 
-  // Update session: clear student fields and set status back to 'pending'
-  // Also set participants to 1 (mentor still present)
-  let updatedSession = session;
-  try {
-    const { data: updatedRows, error: updateError } = await supabase
-      .from('sessions')
-      .update({ student_name: null, student_email: null, status: 'pending', participants: 1 })
-      .eq('id', session.id)
-      .select();
+  // Save identifying info about the previous student so we can disconnect them
+  const prevStudentEmail = session.student_email;
+  const prevStudentName = session.student_name;
 
-    if (updateError) {
-      return next(new AppError('Failed to disconnect student', 500));
-    }
+  // Generate a new unique link and update the session record
+  const maxAttempts = 5;
+  let attempt = 0;
+  let updatedSession = null;
+  let lastError = null;
 
-    if (updatedRows && updatedRows[0]) {
-      updatedSession = updatedRows[0];
+  while (attempt < maxAttempts && !updatedSession) {
+    attempt += 1;
+    const newLink = generateToken(6);
+
+    try {
+      const { data: updatedRows, error: updateError } = await supabase
+        .from('sessions')
+        .update({
+          link: newLink,
+          student_name: null,
+          student_email: null,
+          status: 'pending',
+          participants: 1
+        })
+        .eq('id', session.id)
+        .select();
+
+      if (updateError) {
+        lastError = updateError;
+        const msg = (updateError.message || '').toLowerCase();
+        const isUniqueViolation =
+          msg.includes('duplicate') ||
+          msg.includes('unique') ||
+          String(updateError.code) === '23505';
+
+        if (isUniqueViolation) {
+          // collision - try again
+          continue;
+        }
+
+        return next(
+          new AppError(updateError.message || 'Database error when creating new session link', 500)
+        );
+      }
+
+      if (updatedRows && updatedRows.length > 0) {
+        updatedSession = updatedRows[0];
+        break;
+      }
+    } catch (e) {
+      lastError = e;
     }
-  } catch (e) {
-    return next(new AppError('Failed to disconnect student', 500));
   }
 
-  // Socket handling: notify room and disconnect student sockets
+  if (!updatedSession) {
+    const message = lastError ? lastError.message : 'Failed to create unique session link';
+    return next(new AppError(message, 500));
+  }
+
+  // Socket handling: notify and disconnect previous student sockets connected to the old link
   try {
     const io = req.app && (req.app.get ? req.app.get('io') : req.app.locals && req.app.locals.io);
     if (io && typeof io.in === 'function') {
-      // Notify participants that mentor disconnected the student
+      // Emit to old room that student was rotated (so any UI can react)
       try {
-        io.to(link).emit('student-disconnected', { link });
+        io.to(link).emit('student-disconnected', { link: updatedSession.link });
       } catch (e) {
         // ignore
       }
 
       if (typeof io.in(link).fetchSockets === 'function') {
         const sockets = await io.in(link).fetchSockets();
-
         for (const socket of sockets) {
           try {
             const hs = (socket.handshake && socket.handshake.auth) || {};
@@ -762,11 +799,9 @@ exports.disconnectStudent = catchAsync(async (req, res, next) => {
 
             const matchesStudent =
               (hs.role && hs.role === 'student') ||
-              (hs.email && session.student_email && hs.email === session.student_email) ||
-              (sdata.email && session.student_email && sdata.email === session.student_email) ||
-              (sdata.student_name &&
-                session.student_name &&
-                sdata.student_name === session.student_name);
+              (hs.email && prevStudentEmail && hs.email === prevStudentEmail) ||
+              (sdata.email && prevStudentEmail && sdata.email === prevStudentEmail) ||
+              (sdata.student_name && prevStudentName && sdata.student_name === prevStudentName);
 
             if (matchesStudent) {
               try {
@@ -781,9 +816,9 @@ exports.disconnectStudent = catchAsync(async (req, res, next) => {
         }
       }
 
-      // Emit updated session data so clients refresh their UI
+      // Emit the updated session on the new link so clients listening to it will receive state
       try {
-        io.to(link).emit('session-update', updatedSession);
+        io.to(updatedSession.link).emit('session-update', updatedSession);
       } catch (e) {
         // ignore
       }
@@ -791,13 +826,8 @@ exports.disconnectStudent = catchAsync(async (req, res, next) => {
   } catch (e) {
     // Non-fatal: log and continue
     // eslint-disable-next-line no-console
-    console.warn('disconnectStudent socket handling failed', e && e.message ? e.message : e);
+    console.warn('newSessionLink socket handling failed', e && e.message ? e.message : e);
   }
 
-  res
-    .status(200)
-    .json({
-      status: 'success',
-      data: { message: 'student disconnected', session: updatedSession }
-    });
+  res.status(200).json({ status: 'success', data: updatedSession });
 });
