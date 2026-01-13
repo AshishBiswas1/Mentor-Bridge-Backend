@@ -1,5 +1,6 @@
 const AppError = require('../util/appError');
 const catchAsync = require('../util/catchAsync');
+const supabase = require('../util/supabaseClient');
 
 /**
  * Initialize or sync a collaborative editor for a session link.
@@ -96,4 +97,82 @@ exports.runCode = catchAsync(async (req, res, next) => {
       }
       return res.status(200).json({ status: 'success', data: payloadErr });
     }
+});
+
+exports.saveCode = catchAsync(async (req, res, next) => {
+  const {code, session_id} = req.body;
+
+  if(!code) {
+    return next(new AppError('Code is required to be saved', 400));
+  }
+
+  if(!session_id) {
+    return next(new AppError('Session ID is required', 400));
+  }
+
+  // Check if code already exists for this session
+  const {data: existing, error: findError} = await supabase
+    .from('code')
+    .select('*')
+    .eq('session_id', session_id)
+    .maybeSingle();
+
+  if(findError) {
+    return next(new AppError('Database error while checking existing code', 500));
+  }
+
+  let result;
+  if(existing) {
+    // Update existing code
+    const {data: updated, error: updateError} = await supabase
+      .from('code')
+      .update({ code, updated_at: new Date().toISOString() })
+      .eq('session_id', session_id)
+      .select();
+
+    if(updateError) {
+      return next(new AppError('Failed to update code', 500));
+    }
+    result = updated;
+  } else {
+    // Insert new code
+    const {data: inserted, error: insertError} = await supabase
+      .from('code')
+      .insert({ code, session_id })
+      .select();
+
+    if(insertError) {
+      return next(new AppError('Failed to save code', 500));
+    }
+    result = inserted;
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: result
+  });
+});
+
+exports.getCode = catchAsync(async (req, res, next) => {
+  const {session_id} = req.query;
+
+  if(!session_id) {
+    return next(new AppError('Session id is needed', 400));
+  }
+
+  const {data, error} = await supabase
+    .from('code')
+    .select('code')
+    .eq('session_id', session_id)
+    .maybeSingle();
+
+  if(error) {
+    return next(new AppError(error.message || 'Could not find the code', 400));
+  }
+
+  // If no code found, return null so frontend can use default
+  res.status(200).json({
+    status: 'success',
+    data: data || null
+  });
 });
