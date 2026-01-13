@@ -6,11 +6,17 @@ const { Server } = require('socket.io');
 dotenv.config({ path: './.env' });
 
 const server = http.createServer(app);
+
+// Configure Socket.IO CORS using same allowlist approach as app.js
+const rawSocketOrigins = [process.env.FRONTEND_URL, 'https://mentor-bridge-frontend-git-dev-c0b7d3-ashishs-projects-21c10b17.vercel.app', 'http://localhost:3000'];
+const socketAllowedOrigins = rawSocketOrigins.filter(Boolean).map((o) => String(o).replace(/\/$/, ''));
+
+
 const io = new Server(server, {
   cors: {
-    origin: 'http://localhost:3000',
-    methods: ['GET', 'POST']
-  }
+    origin: socketAllowedOrigins,
+    methods: ['GET', 'POST'],
+  },
 });
 
 app.set('io', io);
