@@ -1,4 +1,4 @@
-// controller/chatController.js
+
 const { supabase } = require('../util/supabaseClient');
 
 // Get all messages for a session (optionally for a student)
@@ -46,3 +46,4 @@ exports.saveMessage = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
