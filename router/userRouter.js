@@ -16,4 +16,7 @@ router.use(authController.protect);
 router.route('/me').get(userController.getMe);
 router.route('/logout').post(authController.logout);
 
+// Returns all the students for a session
+router.route('/sessionStudents').get(userController.getSessionStudents);
+
 module.exports = router;

@@ -20,7 +20,7 @@ router.route('/check').get(sessionController.numberOfParticipants); // Also supp
 router.use(authController.protect);
 router.post('/create', sessionController.createSession);
 router.post('/end', sessionController.endSession);
-router.post('/disconnect-student', sessionController.disconnectStudent);
+router.post('/new-link', sessionController.newSessionLink);
 // Mentor-only endpoints
 router.get('/mentor', sessionController.getMentorSessions);
 router.post('/mentor-join', sessionController.mentorJoinSession);
