@@ -33,7 +33,7 @@ exports.signup = catchAsync(async (req, res, next) => {
     if (error || !data.user) {
      return next(new AppError(error.message || 'Signup failed', 400));
     }
-
+    
     const responseData = parseIfJsonString(data);
 
     res.status(201).json({
@@ -90,45 +90,86 @@ exports.forgotPassword = catchAsync(async (req, res) => {
 /** ------------------ RESET PASSWORD ------------------ **/
 exports.resetPassword = catchAsync(async (req, res) => {
 
-    const { access_token, newPassword } = req.body;
+  const { access_token, newPassword } = req.body;
 
-    if (!access_token || !newPassword)
-      return res.status(400).json({ error: 'Token and new password are required.' });
+  if (!access_token || !newPassword) {
+    return res.status(400).json({
+      error: 'Access token and new password are required',
+    });
+  }
 
-    const { error } = await supabase.auth.updateUser(
-      { password: newPassword },
-      { accessToken: access_token }
-    );
-
-    if (error)
-      return res.status(400).json({ error: error.message });
-
-    return res.json({ message: 'Password updated successfully.' });
+  /* 1️⃣ Set session using recovery access token */
+  const { error: sessionError } = await supabase.auth.setSession({
+    access_token,
+    refresh_token: access_token, // required but ignored for recovery flow
   });
+
+  if (sessionError) {
+    return res.status(401).json({
+      error: 'Invalid or expired reset token',
+    });
+  }
+
+  /* 2️⃣ Update password */
+  const { error: updateError } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+
+  if (updateError) {
+    return res.status(400).json({
+      error: updateError.message,
+    });
+  }
+
+  return res.json({
+    message: 'Password updated successfully',
+  });
+});
+
 
 
 /** ------------------ LOGOUT ------------------ **/
-exports.logout = catchAsync(async (req, res) => {
- 
-    const { error } = await supabase.auth.signOut();
+exports.logout = catchAsync(async (req, res, next) => {
+  const { error } = await supabase.auth.signOut();
 
-    if (error)
-      return next(new AppError(error.message, 400));
+  if (error) return next(new AppError(error.message, 400));
 
-    res.status(200).json({ status: 'success', message: 'Logout successful.' });
+  res.status(200).json({ status: 'success', message: 'Logout successful.' });
 });
 
 /** ------------------ Protect ------------------ **/
-exports.Protect = catchAsync(async (req, res, next) => {
+exports.protect = catchAsync(async (req, res, next) => {
+  // 1) Check if token exists
+  let token;
+  if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith('Bearer')
+  ) {
+    token = req.headers.authorization.split(' ')[1];
+  }
 
-  const token = req.headers.authorization?.split(' ')[1];
-  
-  if (!token) return next(new AppError('You are not logged in! Please login to get access'));
+  if (!token) {
+    return next(
+      new AppError('You are not logged in. Please log in to get access.', 401)
+    );
+  }
 
-  const { data: user, error } = await supabase.auth.getUser(token);
+  // 2) Verify token with Supabase
+  const {
+    data: { user },
+    error
+  } = await supabase.auth.getUser(token);
 
-  if (error || !user) return next(new AppError('User does not exist or the token has expired! Please login again'));
+  if (error || !user) {
+    return next(
+      new AppError(
+        'Invalid token or session expired. Please log in again.',
+        401
+      )
+    );
+  }
 
+  // 3) Attach user to request
   req.user = user;
   next();
 });
