@@ -1,28 +1,53 @@
-import express from 'express';
-import dotenv from 'dotenv/config';
-import http from 'http';
-import { Server } from 'socket.io';
+const express = require('express');
+const dotenv = require('dotenv');
+const cors= require('cors')
+const http = require('http');
+const { Server } = require('socket.io');
 
-import authRoutes from './routes/authRoutes.js';
-import chatRoutes from './routes/chatRoutes.js';
-import { initChatSocket } from './util/chatSocket.js';
-import {initSignaling} from './util/signalSocket.js';
+const authRoutes = require('./routes/authRoutes');
+const chatRoutes = require('./routes/chatRouter');
+const sessionRoutes= require('./routes/sessionRouter')
+const codeEditorRouter= require('./routes/codeEditRouter')
+
+const { initChatSocket } = require('./util/chatSocket');
+const  initSignaling  = require('./util/signalSocket');
+
+dotenv.config();
 
 const app = express();
-const dotenvConfig = dotenv.config();
+app.use(express.json());
+
+
+app.use(cors({ origin: '*',
+    credentials: true,
+    methods:["GET","POST"]
+   }))
+
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' }
+  cors: { origin: '*',
+    credentials: true,
+    methods:["GET","POST"],
+    transports: ['websocket', 'polling']
+   }
 });
 
 const PORT = process.env.PORT;
 
-app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/session', sessionRoutes);
+app.use('/api/code-editor', codeEditorRouter);
 
-initChatSocket(io);
-initSignaling(io);
+const chatNamespace = io.of('/chat');
+const signalNamespace = io.of('/signal');
+
+console.log('Namespaces before:', Object.keys(io._nsps));
+
+initChatSocket(chatNamespace);
+initSignaling(signalNamespace);
+
+console.log('Namespaces after:', Object.keys(io._nsps));
 
 server.listen(PORT, () => {
   console.log(`Backend running on ${PORT}`);

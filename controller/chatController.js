@@ -1,27 +1,48 @@
-import { supabase } from '../db/supabaseClient.js';
+// controller/chatController.js
+const { supabase } = require('../util/supabaseClient');
 
-export const saveMessage = async (req, res) => {
-  const { sessionId, user, content, type } = req.body;
+// Get all messages for a session (optionally for a student)
+exports.getMessages = async (req, res) => {
+  const { sessionId, studentName } = req.query;
 
-  const { data, error } = await supabase
-    .from('messages')
-    .insert([{ session_id: sessionId, user_name: user, content, type }])
-    .select()
-    .single();
+  try {
+    let query = supabase.from('messages').select('*').eq('session_id', sessionId);
 
-  if (error) return res.status(500).json(error);
-  res.status(201).json(data);
+    if (studentName) query = query.eq('student_name', studentName);
+
+    const { data, error } = await query.order('created_at', { ascending: true });
+
+    if (error) throw error;
+
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 };
 
-export const getMessages = async (req, res) => {
-  const { sessionId } = req.query;
+// Save message via REST API (optional if using sockets)
+exports.saveMessage = async (req, res) => {
+  const { sessionId, studentName, userName, content, type } = req.body;
 
-  const { data, error } = await supabase
-    .from('messages')
-    .select('*')
-    .eq('session_id', sessionId)
-    .order('created_at');
+  try {
+    const { data, error } = await supabase
+      .from('messages')
+      .insert({
+        session_id: sessionId,
+        student_name: studentName,
+        user_name: userName,
+        content,
+        type: type || 'text'
+      })
+      .select()
+      .single();
 
-  if (error) return res.status(500).json(error);
-  res.json(data);
+    if (error) throw error;
+
+    res.status(201).json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 };

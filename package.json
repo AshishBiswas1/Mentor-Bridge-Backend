@@ -20,10 +20,14 @@
   "homepage": "https://github.com/AshishBiswas1/Mentor-Bridge-Backend#readme",
   "dependencies": {
     "@supabase/supabase-js": "^2.89.0",
+    "axios": "^1.13.2",
+    "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "http": "^0.0.1-security",
+    "nanoid": "^5.1.6",
     "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
     "uuid": "^13.0.0"
   }
 }
