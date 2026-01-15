@@ -22,11 +22,11 @@ const io = new Server(server, {
 app.set('io', io);
 
 io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id);
+  // connection log removed per request
 
   socket.on('join-session', (sessionId) => {
     socket.join(sessionId);
-    console.log(`User ${socket.id} joined session ${sessionId}`);
+    // join-session log removed per request
   });
 
   // Relay collaborative editor changes to everyone in the same session
@@ -53,10 +53,19 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+    // disconnect log removed per request
   });
 });
 
+// Initialize dedicated signaling namespace for multi-room video
+const initSignaling = require('./util/signalSocket');
+const signalNs = io.of('/signal');
+initSignaling(signalNs);
+
+// Initialize chat socket on root namespace
+const { initChatSocket } = require('./util/chatSocket');
+initChatSocket(io);
+
 const port = process.env.PORT || 8000;
 
-server.listen(port, () => console.log(`Server is running on port: ${port}`));
+server.listen(port, () => {console.log(`The server is running on port: ${port}`)});
