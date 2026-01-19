@@ -13,34 +13,9 @@ exports.initChatSocket = (io) => {
       const roomKey = room || sessionId || link || String(sessionId || link || 'default');
       socket.join(roomKey);
 
-      // Optional: send system message and persist if supabase is configured
-      (async () => {
-        try {
-          if (supabase && typeof supabase.from === 'function') {
-            const { data, error } = await supabase
-              .from('messages')
-              .insert({
-                session_id: sessionId || link || null,
-                student_name: studentName || null,
-                user_name: 'system',
-                content: `${user} joined the chat`,
-                type: 'system'
-              })
-              .select()
-              .single();
-
-            if (!error && data) {
-              io.to(roomKey).emit('receiveMessage', data);
-              return;
-            }
-          }
-        } catch (e) {
-          // if DB insert fails, fall through to emit a lightweight message
-        }
-
-        // Emit a minimal system message if DB isn't available
-        io.to(roomKey).emit('receiveMessage', { id: `sys-${Date.now()}`, user_name: 'system', content: `${user} joined the chat`, type: 'system', created_at: new Date().toISOString() });
-      })();
+      // Note: system join messages are intentionally not emitted or persisted.
+      // We only join the socket to the room. UI/clients that need presence
+      // indicators should rely on participant events rather than chat messages.
     });
 
     // Sending a chat message
@@ -79,30 +54,8 @@ exports.initChatSocket = (io) => {
       const roomKey = room || sessionId || link || String(sessionId || link || 'default');
       socket.leave(roomKey);
 
-      try {
-        if (supabase && typeof supabase.from === 'function') {
-          const { data, error } = await supabase
-            .from('messages')
-            .insert({
-              session_id: sessionId || link || null,
-              student_name: studentName || null,
-              user_name: 'system',
-              content: `${user} left the chat`,
-              type: 'system'
-            })
-            .select()
-            .single();
-
-          if (!error && data) {
-            io.to(roomKey).emit('receiveMessage', data);
-            return;
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
-
-      io.to(roomKey).emit('receiveMessage', { id: `sys-${Date.now()}`, user_name: 'system', content: `${user} left the chat`, type: 'system', created_at: new Date().toISOString() });
+      // Intentionally do not persist or emit system "left" messages.
+      // Clients should use participant events or session updates for presence.
     });
 
     socket.on('disconnect', () => {
