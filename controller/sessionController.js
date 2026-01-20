@@ -497,11 +497,11 @@ exports.endSession = catchAsync(async (req, res, next) => {
   res.status(200).json({ status: 'success', data: updatedSession });
 });
 
-exports.getMentorSessions = catchAsync(async (req, res, next) => {
+exports.activeSessions = catchAsync(async (req, res, next) => {
   const { data, error } = await supabase
     .from('sessions')
     .select('id, link, status, started_at, ended_at, session_name')
-    .eq('mentor_id', req.user.id);
+    .eq('mentor_id', req.user.id).neq('status', 'ended');
 
   if (error) {
     return next(new AppError(error.message || 'No session found', 400));
@@ -830,4 +830,43 @@ exports.newSessionLink = catchAsync(async (req, res, next) => {
   }
 
   res.status(200).json({ status: 'success', data: updatedSession });
+});
+
+exports.endedSession = catchAsync(async (req, res, next) => {
+  // Get page number from query params (default to 1)
+  const page = parseInt(req.query.page) || 1;
+  
+  // Limit to 5 pages max (50 sessions total)
+  if (page < 1 || page > 5) {
+    return next(new AppError('Page must be between 1 and 5', 400));
+  }
+  
+  const limit = 10;
+  const offset = (page - 1) * limit;
+  
+  const { data, error, count } = await supabase
+    .from('sessions')
+    .select('id, link, status, started_at, ended_at, session_name, created_at', { count: 'exact' })
+    .eq('mentor_id', req.user.id)
+    .eq('status', 'ended')
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
+
+  if (error) {
+    return next(new AppError(error.message || 'No session found', 400));
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data,
+    pagination: {
+      currentPage: page,
+      totalPages: Math.min(5, Math.ceil(count / limit)),
+      totalSessions: count, // Actual total count of all ended sessions
+      displayedSessions: Math.min(50, count), // Max sessions that can be viewed (50)
+      sessionsPerPage: limit,
+      hasNextPage: page < 5 && count > page * limit,
+      hasPrevPage: page > 1
+    }
+  });
 });
