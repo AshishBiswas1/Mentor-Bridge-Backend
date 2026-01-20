@@ -22,7 +22,8 @@ router.post('/create', sessionController.createSession);
 router.post('/end', sessionController.endSession);
 router.post('/new-link', sessionController.newSessionLink);
 // Mentor-only endpoints
-router.get('/mentor', sessionController.getMentorSessions);
+router.get('/active', sessionController.activeSessions);
+router.get('/ended', sessionController.endedSession);
 router.post('/mentor-join', sessionController.mentorJoinSession);
 
 module.exports = router;
