@@ -47,7 +47,7 @@ exports.runCode = catchAsync(async (req, res, next) => {
   }
 
   const TIMEOUT_MS = parseInt(process.env.CODE_RUN_TIMEOUT_MS || '5000', 10);
-  const PISTON_URL = process.env.PISTON_URL || 'https://emkc.org/api/v2/piston/execute';
+  const PISTON_URL = process.env.PISTON_URL;
 
     const io = req.app && (req.app.get ? req.app.get('io') : req.app.locals && req.app.locals.io);
     const actor = (req.user && (req.user.name || req.user.email || req.user.id)) || 'anonymous';
@@ -63,7 +63,7 @@ exports.runCode = catchAsync(async (req, res, next) => {
     const remoteRunner = require('../util/remoteRunner');
     const pistonUrl = process.env.PISTON_URL;
     const pistonVersion = process.env.PISTON_VERSION;
-    const timeoutMs = parseInt(process.env.CODE_RUN_TIMEOUT_MS || '5000', 10);
+    const timeoutMs = parseInt(process.env.CODE_RUN_TIMEOUT_MS, 10);
 
     try {
       const result = await remoteRunner.runRemote(code, { pistonUrl, pistonVersion, timeoutMs });
