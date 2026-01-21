@@ -3,6 +3,7 @@ const AppError = require('./util/appError');
 const morgan = require('morgan');
 const helmet = require('helmet');
 const cors = require('cors');
+const globalErrorHandler = require('./controller/errorController');
 
 const userRouter = require('./router/userRouter');
 const sessionRouter = require('./router/sessionRouter');
@@ -23,7 +24,6 @@ app.use(helmet());
 // FRONTEND_URL should be set in backend `.env` (loaded by server.js)
 const rawOrigins = [
   process.env.FRONTEND_URL,
-  'https://mentor-bridge-frontend-git-dev-c0b7d3-ashishs-projects-21c10b17.vercel.app',
   'http://localhost:3000',
 ];
 
@@ -54,5 +54,7 @@ app.use('/editor', codeEditorRouter);
 app.all('*', (req, res, next) => {
   next(new AppError(`Can't find ${req.originalUrl} on this server!`, 404));
 });
+
+app.use(globalErrorHandler);
 
 module.exports = app;

@@ -8,4 +8,8 @@ router.post('/create', codeEditorController.createCollaborativeEditor);
 // Execute python code (returns stdout/stderr)
 router.post('/run', codeEditorController.runCode);
 
+router.route('/saveCode').post(codeEditorController.saveCode);
+
+router.route('/getCode').get(codeEditorController.getCode);
+
 module.exports = router;
